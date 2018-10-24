@@ -34,8 +34,8 @@ def _parse_args():
     parser.add_argument('--hidden_size', type=int, default=200, help='hidden state dimensionality')
     parser.add_argument('--emb_dropout', type=int, default=0.2, help='Dropout for embedding layer')
     parser.add_argument('--rnn_dropout', type=int, default=0, help='Dropout for LSTM')
-    parser.add_argument('--bidirectional', dest='bidirectional', default=False, action='store_true', help='run the nearest neighbor model')
-    parser.add_argument('--teacher_forcing_ratio', type=float, default=0.5)
+    parser.add_argument('--bidirectional', dest='bidirectional', default=True, action='store_true', help='run the nearest neighbor model')
+    parser.add_argument('--teacher_forcing_ratio', type=float, default=1.0)
     args = parser.parse_args()
     return args
 
@@ -97,19 +97,21 @@ if __name__ == '__main__':
     else:
         beam_length = 1
         out = len(output_indexer)
-        train_data_indexed = train_data_indexed[0:10]
-        test_data_indexed  = test_data_indexed[0:1]
+        #train_data_indexed = train_data_indexed[0:10]
+        #test_data_indexed  = test_data_indexed[0:2]
         decoder = train_iters(train_data_indexed, args.epochs, input_indexer, output_indexer, args, beam_length, out)
         # Next line tests copy act
         #decoder = train_iters(train_data_indexed, args.epochs, input_indexer, input_indexer, args, beam_length, out)
 
-        pred = decoder.decode(test_data_indexed)
-        print("pred: ", pred)
+        #pred = decoder.decode(test_data_indexed)
+        #print("pred: ", pred)
+        print("BEGIN EVALUATION")
+        evaluate(dev_data_indexed, decoder)
         #test = [(' '.join(d.y_toks)) for x in pred for d in x]
         #for x in pred:
             #for d in x:
                 #print("y_toks: ", d.y_toks)
         #for i in test_data_indexed:
             #print(i.y_tok)
-    print("=======FINAL EVALUATION=======")
-    evaluate(test_data_indexed, decoder, outfile="geo_test_output.tsv")
+    #print("=======FINAL EVALUATION=======")
+    #evaluate(test_data_indexed, decoder, outfile="geo_test_output.tsv")

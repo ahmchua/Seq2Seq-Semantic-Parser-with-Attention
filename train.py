@@ -29,14 +29,15 @@ class Seq2SeqSemanticParser(object):
         self.model_dec.zero_grad()
 
         SOS_token = 1
-        EOS_token = 2
+        EOS_token = self.output_indexer.index_of('<EOS>')
         SOS_label = self.output_indexer.get_object(SOS_token)
         beam_length = 1
         derivations = []
+        print("EOS_token: ", EOS_token)
 
         for ex in test_data:
             count = 0
-            y_toks =[SOS_label]
+            y_toks =[]
             self.model_enc.zero_grad()
             self.model_dec.zero_grad()
 
@@ -48,15 +49,16 @@ class Seq2SeqSemanticParser(object):
             dec_hidden = enc_hidden
             dec_input = torch.as_tensor([[SOS_token]])
 
-            while dec_input != EOS_token and count <= self.args.decoder_len_limit:
+            while (dec_input.item() != EOS_token) and count <= self.args.decoder_len_limit:
                 dec_output, dec_input, dec_input_val, dec_hidden = decode(dec_input, dec_hidden, self.model_output_emb, self.model_dec, beam_length)
-                #print("dec_output: ", dec_output)
-                y_label = self.output_indexer.get_object(int(dec_input.squeeze()))
-                y_toks.append(y_label)
-                #y_toks.append(int(dec_input.squeeze()))
+                y_label = self.output_indexer.get_object(dec_input.item())
+                if dec_input.item() != EOS_token:
+                    y_toks.append(y_label)
                 count = count + 1
-            derivations.append([Derivation(ex, 1.0 , str(y_toks))])
-            print("prediction: ", y_toks)
+                print("dec_input: ", dec_input)
+                print("dec_input.item(): ", dec_input.item())
+            derivations.append([Derivation(ex, 1.0 , y_toks)])
+            #print("prediction: ", y_toks)
         return derivations
 
 
@@ -155,19 +157,19 @@ def train_model_encdec(ex, model_input_emb, model_enc, model_output_emb, model_d
     dec_input = torch.as_tensor([[SOS_token]])
     y_temp = []
 
-    teacher_forcing = True if random.random() < teacher_forcing_ratio else False
+    teacher_forcing = True if random.random() <= teacher_forcing_ratio else False
 
     for y_ex in range(len(y_tensor)):
         dec_output, dec_input, dec_input_val, dec_hidden = decode(dec_input, dec_hidden, model_output_emb, model_dec, beam_length)
         loss += criterion(dec_output, y_tensor[y_ex].unsqueeze(0))
         y_temp.append(int(dec_input.squeeze()))
-        if dec_input ==EOS_token:
-            break
+        #if dec_input ==EOS_token:
+            #break
         if teacher_forcing:
             dec_input = y_tensor[y_ex].unsqueeze(0).unsqueeze(0)
 
-    print("predicted: ", y_temp)
-    print("actual: ", ex.x_indexed, '\n')
+    #print("predicted: ", y_temp)
+    #print("actual: ", ex.x_indexed, '\n')
 
     loss.backward()
     enc_optimizer.step()
@@ -182,6 +184,12 @@ def train_iters(train_data, epochs, input_indexer, output_indexer, args, beam_le
     model_enc = RNNEncoder(args.input_dim, args.hidden_size, args.rnn_dropout, args.bidirectional)
     model_output_emb = EmbeddingLayer(args.input_dim, len(output_indexer), args.emb_dropout)
     model_dec = RNNDecoder(args.input_dim, args.hidden_size, out, dropout = 0 )
+
+    # Set all models to training mode
+    model_input_emb.train()
+    model_enc.train()
+    model_output_emb.train()
+    model_dec.train()
 
     #Initialize optimizers
     enc_optimizer = optim.Adam(model_enc.parameters(), lr=args.lr)
