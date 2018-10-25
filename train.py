@@ -45,7 +45,7 @@ class Seq2SeqSemanticParser(object):
             y_tensor = torch.as_tensor(ex.y_indexed)
             inp_lens_tensor = torch.as_tensor([ex.x_len()])
 
-            enc_output, enc_context_mask, enc_hidden = encode_input_for_decoder(x_tensor, inp_lens_tensor, self.model_input_emb, self.model_enc)
+            enc_output, enc_context_mask, enc_hidden, enc_bi_hidden = encode_input_for_decoder(x_tensor, inp_lens_tensor, self.model_input_emb, self.model_enc)
             dec_hidden = enc_hidden
             dec_input = torch.as_tensor([[SOS_token]])
 
@@ -55,11 +55,65 @@ class Seq2SeqSemanticParser(object):
                 if dec_input.item() != EOS_token:
                     y_toks.append(y_label)
                 count = count + 1
-                print("dec_input: ", dec_input)
-                print("dec_input.item(): ", dec_input.item())
+                #print("dec_input: ", dec_input)
+                #print("dec_input.item(): ", dec_input.item())
+            derivations.append([Derivation(ex, 1.0 , y_toks)])
+            print("prediction: ", y_toks)
+        return derivations
+
+class Seq2SeqSemanticParserAttn(object):
+    def __init__(self, model_input_emb, model_enc, model_output_emb, model_dec, args, output_indexer):
+        self.model_input_emb = model_input_emb
+        self.model_enc = model_enc
+        self.model_output_emb = model_output_emb
+        self.model_dec = model_dec
+        self.args = args
+        self.output_indexer = output_indexer
+        # Add any args you need here
+
+    def decode(self, test_data):
+        self.model_input_emb.eval()
+        self.model_enc.eval()
+        self.model_output_emb.eval()
+        self.model_dec.eval()
+
+        self.model_enc.zero_grad()
+        self.model_dec.zero_grad()
+
+        SOS_token = 1
+        EOS_token = self.output_indexer.index_of('<EOS>')
+        SOS_label = self.output_indexer.get_object(SOS_token)
+        beam_length = 1
+        derivations = []
+        print("EOS_token: ", EOS_token)
+
+        for ex in test_data:
+            count = 0
+            y_toks =[]
+            self.model_enc.zero_grad()
+            self.model_dec.zero_grad()
+
+            x_tensor = torch.as_tensor([ex.x_indexed])
+            y_tensor = torch.as_tensor(ex.y_indexed)
+            inp_lens_tensor = torch.as_tensor([ex.x_len()])
+
+            enc_output, enc_context_mask, enc_hidden, enc_bi_hidden = encode_input_for_decoder(x_tensor, inp_lens_tensor, self.model_input_emb, self.model_enc)
+            dec_hidden = enc_hidden
+            context_vec = enc_bi_hidden[0]
+            dec_input = torch.as_tensor([[SOS_token]])
+
+            while (dec_input.item() != EOS_token) and count <= self.args.decoder_len_limit:
+                dec_output, dec_input, dec_input_val, dec_hidden, context_vec = decode_attn(dec_input, dec_hidden, self.model_output_emb, self.model_dec, context_vec, enc_output, beam_length)
+                y_label = self.output_indexer.get_object(dec_input.item())
+                if dec_input.item() != EOS_token:
+                    y_toks.append(y_label)
+                count = count + 1
+                #print("dec_input: ", dec_input)
+                #print("dec_input.item(): ", dec_input.item())
             derivations.append([Derivation(ex, 1.0 , y_toks)])
             #print("prediction: ", y_toks)
         return derivations
+
 
 
 # Takes the given Examples and their input indexer and turns them into a numpy array by padding them out to max_len.
@@ -99,21 +153,34 @@ def make_padded_output_tensor(exs, output_indexer, max_len):
 def encode_input_for_decoder(x_tensor, inp_lens_tensor, model_input_emb, model_enc):
     input_emb = model_input_emb.forward(x_tensor)
     #print("input_emb: ", input_emb)
-    (enc_output_each_word, enc_context_mask, enc_final_states) = model_enc.forward(input_emb, inp_lens_tensor)
+    (enc_output_each_word, enc_context_mask, enc_final_states, enc_bi_hidden) = model_enc.forward(input_emb, inp_lens_tensor)
     enc_final_states_reshaped = (enc_final_states[0].unsqueeze(0), enc_final_states[1].unsqueeze(0))
     #enc_final_states_reshaped = (enc_final_states[0].squeeze(), enc_final_states[1].squeeze())
-    return (enc_output_each_word, enc_context_mask, enc_final_states_reshaped)
+    return (enc_output_each_word, enc_context_mask, enc_final_states_reshaped, enc_bi_hidden)
 
 
 def decode(y_index, hidden, model_output_emb, model_dec, beam_length):
     #print("y_ex: ", y_index)
     output_emb = model_output_emb.forward(y_index)
-    #print("output_emb: ", output_emb)
     output, hidden = model_dec.forward(output_emb, hidden)
     top_val, top_ind = output.topk(beam_length)
     dec_input = top_ind.detach()
     dec_input_prob = top_val.detach()
     return output, dec_input, dec_input_prob, hidden
+
+def decode_attn(y_index, hidden, model_output_emb, model_dec, context_vec, encoder_output, beam_length):
+    output_emb = model_output_emb.forward(y_index)
+    #print("output_emb: ", output_emb)
+    #print("output_emb size: ", output_emb.squeeze(1).size())
+    #print("context_vec_0 size: ", context_vec.size())
+    output_emb= torch.cat((output_emb.squeeze(1), context_vec), dim = 1) #CHANGE
+    output_emb = output_emb.unsqueeze(0)
+    #print("Concatenated value size: ", test.size())
+    output, hidden, context_vec = model_dec.forward(output_emb, hidden, encoder_output)
+    top_val, top_ind = output.topk(beam_length)
+    dec_input = top_ind.detach()
+    dec_input_prob = top_val.detach()
+    return output, dec_input, dec_input_prob, hidden, context_vec
 
 def train_model_encdec(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, beam_length, teacher_forcing_ratio):
     # Sort in descending order by x_indexed, essential for pack_padded_sequence
@@ -149,7 +216,7 @@ def train_model_encdec(ex, model_input_emb, model_enc, model_output_emb, model_d
     #y_tensor = torch.as_tensor(ex.x_indexed)
     y_tensor = torch.as_tensor(ex.y_indexed)
     inp_lens_tensor = torch.as_tensor([ex.x_len()])
-    enc_output, enc_context_mask, enc_hidden = encode_input_for_decoder(x_tensor, inp_lens_tensor, model_input_emb, model_enc)
+    enc_output, enc_context_mask, enc_hidden, enc_bi_hidden = encode_input_for_decoder(x_tensor, inp_lens_tensor, model_input_emb, model_enc)
     dec_hidden = enc_hidden
 
     #print("enc_hidden shape", enc_hidden)
@@ -163,8 +230,8 @@ def train_model_encdec(ex, model_input_emb, model_enc, model_output_emb, model_d
         dec_output, dec_input, dec_input_val, dec_hidden = decode(dec_input, dec_hidden, model_output_emb, model_dec, beam_length)
         loss += criterion(dec_output, y_tensor[y_ex].unsqueeze(0))
         y_temp.append(int(dec_input.squeeze()))
-        #if dec_input ==EOS_token:
-            #break
+        if dec_input ==EOS_token:
+            break
         if teacher_forcing:
             dec_input = y_tensor[y_ex].unsqueeze(0).unsqueeze(0)
 
@@ -177,13 +244,73 @@ def train_model_encdec(ex, model_input_emb, model_enc, model_output_emb, model_d
 
     return loss
 
+def train_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, beam_length, teacher_forcing_ratio):
+    loss = 0
+    SOS_token = 1
+    EOS_token = 2
+    criterion = torch.nn.NLLLoss()
+
+    model_enc.zero_grad()
+    model_dec.zero_grad()
+
+    x_tensor = torch.as_tensor([ex.x_indexed])
+    y_tensor = torch.as_tensor(ex.y_indexed)
+    inp_lens_tensor = torch.as_tensor([ex.x_len()])
+
+    (enc_output, enc_context_mask, enc_hidden, enc_bi_hidden) = encode_input_for_decoder(x_tensor, inp_lens_tensor, model_input_emb, model_enc)
+    dec_hidden = enc_hidden
+    context_vec = enc_bi_hidden[0]
+    #print("hidden_enc size: ", enc_bi_hidden[0].size())
+    #print("context_vec: ", context_vec)
+    #print("enc_outputs size: ", enc_output.size())
+
+    dec_input = torch.as_tensor([[SOS_token]])
+    y_temp = []
+
+    # Initialize loss
+    loss = 0
+    SOS_token = 1
+    EOS_token = 2
+    criterion = torch.nn.NLLLoss()
+
+    teacher_forcing = True if random.random() <= teacher_forcing_ratio else False
+
+    for y_ex in range(len(y_tensor)):
+        dec_output, dec_input, dec_input_val, dec_hidden, context_vec = decode_attn(dec_input, dec_hidden, model_output_emb, model_dec, context_vec, enc_output, beam_length)
+        #dec_output = dec_output.squeeze()
+        #print("dec_output: ", dec_output.squeeze(0))
+        #print("y_tensor[y_ex]", y_tensor[y_ex].unsqueeze(0))
+        loss += criterion(dec_output, y_tensor[y_ex].unsqueeze(0))
+        if dec_input == EOS_token:
+            break
+        if teacher_forcing:
+            dec_input = y_tensor[y_ex].unsqueeze(0).unsqueeze(0)
+
+    loss.backward()
+    enc_optimizer.step()
+    dec_optimizer.step()
+
+    return loss
+
+
+
+
+
 def train_iters(train_data, epochs, input_indexer, output_indexer, args, beam_length, out):
 
     # Create encoder, decoder and embedding layers
     model_input_emb = EmbeddingLayer(args.input_dim, len(input_indexer), args.emb_dropout)
     model_enc = RNNEncoder(args.input_dim, args.hidden_size, args.rnn_dropout, args.bidirectional)
     model_output_emb = EmbeddingLayer(args.input_dim, len(output_indexer), args.emb_dropout)
-    model_dec = RNNDecoder(args.input_dim, args.hidden_size, out, dropout = 0 )
+    if args.attn == 'N':
+        print("Model with no attention")
+        model_dec = RNNDecoder(args.input_dim, args.hidden_size, out, dropout = 0 )
+        train_model = train_model_encdec
+    elif args.attn == 'Y':
+        print("Model with attention")
+        model_dec = AttnRNNDecoder(args.input_dim + args.hidden_size*2, args.hidden_size * 2, args.hidden_size, out, args.rnn_dropout)  #CHANGE
+        #model_dec = AttnRNNDecoder(args.input_dim, args.hidden_size * 2, args.hidden_size, out, args.rnn_dropout)
+        train_model = train_attn
 
     # Set all models to training mode
     model_input_emb.train()
@@ -197,18 +324,23 @@ def train_iters(train_data, epochs, input_indexer, output_indexer, args, beam_le
 
     count = 0.0
     for i in range(epochs):
-        loss = 0.0
         for ex in train_data:
-            inc_loss = train_model_encdec(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, beam_length, args.teacher_forcing_ratio)
+            inc_loss = train_model(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, beam_length, args.teacher_forcing_ratio)
+            #if args.attn == 'N':
+            #    print('Model with no attention')
+            #    inc_loss = train_model_encdec(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, beam_length, args.teacher_forcing_ratio)
+            #elif args.attn == 'Y':
+            #    print('Model with attention')
+            #    inc_loss = train_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, beam_length, args.teacher_forcing_ratio)
             if count %25 ==0:
                 print ("loss: ", inc_loss)
             count = count + 1
 
         print("epoch: ", i)
-        print("loss: ", loss)
-
-    return Seq2SeqSemanticParser(model_input_emb, model_enc, model_output_emb, model_dec, args, output_indexer)
-
+    if args.attn == 'N':
+        return Seq2SeqSemanticParser(model_input_emb, model_enc, model_output_emb, model_dec, args, output_indexer)
+    elif args.attn == 'Y':
+        return Seq2SeqSemanticParserAttn(model_input_emb, model_enc, model_output_emb, model_dec, args, output_indexer)
 
 # Evaluates decoder against the data in test_data (could be dev data or test data). Prints some output
 # every example_freq examples. Writes predictions to outfile if defined. Evaluation requires

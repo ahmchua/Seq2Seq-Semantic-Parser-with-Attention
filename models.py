@@ -85,13 +85,14 @@ class RNNEncoder(nn.Module):
             h_, c_ = torch.cat((h[0], h[1]), dim=1), torch.cat((c[0], c[1]), dim=1)
             # Reduce them by multiplying by a weight matrix so that the hidden size sent to the decoder is the same
             # as the hidden size in the encoder
+            bi_ht = (h_, c_)
             new_h = self.reduce_h_W(h_)
             new_c = self.reduce_c_W(c_)
             h_t = (new_h, new_c)
         else:
             h, c = hn[0][0], hn[1][0]
             h_t = (h, c)
-        return (output, context_mask, h_t)
+        return (output, context_mask, h_t, bi_ht)
 
 # One-layer RNN decoder for batched inputs -- handles multiple sentences at once. You're free to call it with a
 # leading dimension of 1 (batch size 1) but it does expect this dimension.
@@ -125,3 +126,68 @@ class RNNDecoder(nn.Module):
         output, (h,c) = self.rnn(input, hidden)
         output = self.ff(h[0])
         return self.softmax(output), (h,c)
+
+# One-layer RNN decoder for batched inputs -- handles multiple sentences at once. You're free to call it with a
+# leading dimension of 1 (batch size 1) but it does expect this dimension.
+class AttnRNNDecoder(nn.Module):
+    # Parameters: input size (should match embedding layer), hidden size for the LSTM, dropout rate for the RNN,
+    # and a boolean flag for whether or not we're using a bidirectional encoder
+    def __init__(self, input_size, hidden_size_enc, hidden_size_dec, out, dropout):
+        super(AttnRNNDecoder, self).__init__()
+        self.input_size = input_size
+        self.hidden_size_enc = hidden_size_enc
+        self.hidden_size_dec = hidden_size_dec
+        self.out = out
+
+        self.rnn = nn.LSTM(input_size, hidden_size_dec, num_layers=1, batch_first=True,dropout=dropout)
+        self.attn = nn.Linear(hidden_size_enc, hidden_size_dec)
+        self.attn_hid = nn.Linear(hidden_size_dec + hidden_size_enc, hidden_size_dec)
+        self.ff = nn.Linear(hidden_size_dec, out)
+        self.softmax = nn.LogSoftmax(dim = 1)
+
+        self.init_weight()
+
+    # Initializes weight matrices using Xavier initialization
+    def init_weight(self):
+        nn.init.xavier_uniform_(self.rnn.weight_hh_l0, gain=1)
+        nn.init.xavier_uniform_(self.rnn.weight_ih_l0, gain=1)
+        nn.init.constant_(self.rnn.bias_hh_l0, 0)
+        nn.init.constant_(self.rnn.bias_ih_l0, 0)
+        nn.init.xavier_uniform_(self.attn.weight)
+        nn.init.xavier_uniform_(self.attn_hid.weight)
+        nn.init.xavier_uniform_(self.ff.weight)
+
+
+    # Like the encoder, the embedding layer is outside the decoder. So, it is assumed here
+    # that the input is a word embedding
+    # Input is [embed(e_{t-1}; c_{t-1}), h_{t-1}]
+    def forward(self, input, hidden, encoder_outputs):
+        # Show the example to the decoder and get hidden state
+        output, (h,c) = self.rnn(input, hidden)
+        h_bar = h[0]
+
+        encoder_outputs = encoder_outputs.squeeze()
+        # Calculate eij
+        #print("encoder_outputs size: ", encoder_outputs.size())
+        #print("encoder_outputs: ", encoder_outputs)
+        attn_weight = self.attn(encoder_outputs).squeeze()
+        attn_weight = torch.transpose(attn_weight, 0, 1)
+        #print("attn_weight: ", attn_weight)
+        #print("attn_weight size: ", attn_weight.size())
+        #print("h_bar: ", h_bar)
+        #print("h_bar size: ", h_bar.size())
+        attn_energy = torch.matmul(h_bar, attn_weight)
+        attn_score = F.softmax(attn_energy, dim = 1)
+
+        #print("attn_score.size(): ", attn_score.size())
+        # Calculate the context vector, ci
+        context = torch.matmul(attn_score, encoder_outputs)
+        #print("Context.size(): ", context.size())
+        #print("hbar.size(): ", h_bar.size())
+        # Concatenate the context vector ci and the hidden state hbar
+        attn_hid_combined = torch.cat((context, h_bar), 1)
+        #print("attn_combined: ", attn_hid_combined)
+        #print("attn_combined size: ", attn_hid_combined.size())
+        attn_hid_transformed = self.attn_hid(attn_hid_combined)
+        out = self.ff(attn_hid_transformed)
+        return self.softmax(out), (h,c), context

@@ -36,6 +36,7 @@ def _parse_args():
     parser.add_argument('--rnn_dropout', type=int, default=0, help='Dropout for LSTM')
     parser.add_argument('--bidirectional', dest='bidirectional', default=True, action='store_true', help='run the nearest neighbor model')
     parser.add_argument('--teacher_forcing_ratio', type=float, default=1.0)
+    parser.add_argument('--attn', type=str, default='N')
     args = parser.parse_args()
     return args
 
@@ -105,7 +106,7 @@ if __name__ == '__main__':
 
         #pred = decoder.decode(test_data_indexed)
         #print("pred: ", pred)
-        print("BEGIN EVALUATION")
+        #print("BEGIN EVALUATION")
         evaluate(dev_data_indexed, decoder)
         #test = [(' '.join(d.y_toks)) for x in pred for d in x]
         #for x in pred:
