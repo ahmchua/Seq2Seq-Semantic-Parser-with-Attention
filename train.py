@@ -58,8 +58,9 @@ class Seq2SeqSemanticParser(object):
                 #print("dec_input: ", dec_input)
                 #print("dec_input.item(): ", dec_input.item())
             derivations.append([Derivation(ex, 1.0 , y_toks)])
-            print("prediction: ", y_toks)
+            #print("prediction: ", y_toks)
         return derivations
+
 
 class Seq2SeqSemanticParserAttn(object):
     def __init__(self, model_input_emb, model_enc, model_output_emb, model_dec, args, output_indexer):
@@ -69,6 +70,7 @@ class Seq2SeqSemanticParserAttn(object):
         self.model_dec = model_dec
         self.args = args
         self.output_indexer = output_indexer
+        self.beam_size = args.beam_size
         # Add any args you need here
 
     def decode(self, test_data):
@@ -81,6 +83,7 @@ class Seq2SeqSemanticParserAttn(object):
         self.model_dec.zero_grad()
 
         SOS_token = 1
+        #EOS_token = 8
         EOS_token = self.output_indexer.index_of('<EOS>')
         SOS_label = self.output_indexer.get_object(SOS_token)
         beam_length = 1
@@ -101,17 +104,101 @@ class Seq2SeqSemanticParserAttn(object):
             dec_hidden = enc_hidden
             context_vec = enc_bi_hidden[0]
             dec_input = torch.as_tensor([[SOS_token]])
+            y_temp = []
 
             while (dec_input.item() != EOS_token) and count <= self.args.decoder_len_limit:
                 dec_output, dec_input, dec_input_val, dec_hidden, context_vec = decode_attn(dec_input, dec_hidden, self.model_output_emb, self.model_dec, context_vec, enc_output, beam_length)
                 y_label = self.output_indexer.get_object(dec_input.item())
                 if dec_input.item() != EOS_token:
                     y_toks.append(y_label)
+                    y_temp.append(dec_input.item())
                 count = count + 1
                 #print("dec_input: ", dec_input)
                 #print("dec_input.item(): ", dec_input.item())
             derivations.append([Derivation(ex, 1.0 , y_toks)])
-            #print("prediction: ", y_toks)
+            #print("true path: ", ex.x_indexed)
+            #print("prediction: ", y_temp)
+        return derivations
+
+    def decode_beam(self, test_data):
+        print("DECODING BEAM")
+        self.model_input_emb.eval()
+        self.model_enc.eval()
+        self.model_output_emb.eval()
+        self.model_dec.eval()
+
+        self.model_enc.zero_grad()
+        self.model_dec.zero_grad()
+
+        SOS_token = 1
+        #EOS_token = self.output_indexer.index_of('<EOS>')
+        EOS_token = 8
+        SOS_label = self.output_indexer.get_object(SOS_token)
+
+        beam = Beam(self.beam_size)
+        beam_temp = Beam(self.beam_size)
+
+        derivations = []
+        ex_count = 0
+        #print("EOS_token: ", EOS_token)
+
+        for ex in test_data:
+            ex_derivs = []
+            if ex_count %25 ==0:
+                print("Current train idx: ", ex_count)
+            count = 0
+            y_toks =[]
+            self.model_enc.zero_grad()
+            self.model_dec.zero_grad()
+
+            x_tensor = torch.as_tensor([ex.x_indexed])
+            y_tensor = torch.as_tensor(ex.y_indexed)
+            inp_lens_tensor = torch.as_tensor([ex.x_len()])
+
+            enc_output, enc_context_mask, enc_hidden, enc_bi_hidden = encode_input_for_decoder(x_tensor, inp_lens_tensor, self.model_input_emb, self.model_enc)
+            dec_hidden = enc_hidden
+            context_vec = enc_bi_hidden[0]
+            dec_input = torch.as_tensor([[SOS_token]])
+            beam.add(dec_input, 0.0, dec_hidden, [])
+
+            while count <= self.args.decoder_len_limit:
+                # Check if all dec_input items are EOS, if so, break.
+                if beam.all_EOS(EOS_token):
+                    break
+                for dec_input, dec_prob, dec_hidden, path in beam.get_elts_and_scores():
+                    #print("dec_input: ", dec_input)
+                    if dec_input.item() == EOS_token:
+                        beam_temp.add(dec_input, dec_prob, dec_hidden, path)
+                        #print ("FOUND EOS TOKEN")
+                    if dec_input.item() != EOS_token:
+                        dec_output, dec_input, dec_input_val, dec_hidden, context_vec = decode_attn(dec_input, dec_hidden, self.model_output_emb, self.model_dec, context_vec, enc_output, self.beam_size)
+                        dec_input = dec_input.squeeze()
+                        dec_input_val = dec_input_val.squeeze()
+                        #print("dec_input after decode: ", dec_input)
+                        #print("dec_input: ", dec_input)
+                        #print("dec_input_val", dec_input_val)
+                        for i in range(len(dec_input)):
+                            #y_label = self.output_indexer.get_object(dec_input[i].item())
+                            #path.append(y_label)
+                            #path.append(dec_input[i].item())
+                            #path_temp = path + [y_label]
+                            dec_prob_temp = (dec_prob + dec_input_val[i].item())/(len(path)+1)
+                            #print("Score of new path: ", dec_prob_temp)
+                            beam_temp.add(dec_input[i].unsqueeze(0).unsqueeze(0), dec_prob_temp, dec_hidden, path+[dec_input[i].item()])
+                        #print("current beam elements: ", beam_temp.elts)
+                        #print("current beam score: ", beam_temp.scores)
+                        #print("current beam path: ", beam_temp.path)
+                beam = beam_temp
+                beam_temp = Beam(self.beam_size)
+                count = count + 1
+            ex_count = ex_count + 1
+
+            print("True path: ", ex.x_indexed)
+            for dec_input, dec_prob, dec_hidden, path in beam.get_elts_and_scores():
+                ex_derivs.append(Derivation(ex, dec_prob, path))
+                print("Predicted path: ", path)
+
+            derivations.append(ex_derivs)
         return derivations
 
 
@@ -244,16 +331,19 @@ def train_model_encdec(ex, model_input_emb, model_enc, model_output_emb, model_d
 
     return loss
 
-def train_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, beam_length, teacher_forcing_ratio):
+def train_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, input_emb_optimizer, output_emb_optimizer, beam_length, teacher_forcing_ratio):
     loss = 0
     SOS_token = 1
     EOS_token = 2
     criterion = torch.nn.NLLLoss()
 
+    model_input_emb.zero_grad()
+    model_output_emb.zero_grad()
     model_enc.zero_grad()
     model_dec.zero_grad()
 
     x_tensor = torch.as_tensor([ex.x_indexed])
+    #y_tensor = torch.as_tensor(ex.x_indexed)
     y_tensor = torch.as_tensor(ex.y_indexed)
     inp_lens_tensor = torch.as_tensor([ex.x_len()])
 
@@ -281,14 +371,20 @@ def train_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_
         #print("dec_output: ", dec_output.squeeze(0))
         #print("y_tensor[y_ex]", y_tensor[y_ex].unsqueeze(0))
         loss += criterion(dec_output, y_tensor[y_ex].unsqueeze(0))
+        y_temp.append(dec_input.item())
         if dec_input == EOS_token:
             break
         if teacher_forcing:
             dec_input = y_tensor[y_ex].unsqueeze(0).unsqueeze(0)
 
     loss.backward()
+    input_emb_optimizer.step()
+    output_emb_optimizer.step()
     enc_optimizer.step()
     dec_optimizer.step()
+
+    #print("predicted: ", y_temp)
+    #print("actual: ", ex.x_indexed, '\n')
 
     return loss
 
@@ -319,13 +415,15 @@ def train_iters(train_data, epochs, input_indexer, output_indexer, args, beam_le
     model_dec.train()
 
     #Initialize optimizers
+    input_emb_optimizer = optim.Adam(model_input_emb.parameters(), lr=args.lr)
     enc_optimizer = optim.Adam(model_enc.parameters(), lr=args.lr)
+    output_emb_optimizer = optim.Adam(model_output_emb.parameters(), lr=args.lr)
     dec_optimizer = optim.Adam(model_dec.parameters(), lr=args.lr)
 
     count = 0.0
     for i in range(epochs):
         for ex in train_data:
-            inc_loss = train_model(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, beam_length, args.teacher_forcing_ratio)
+            inc_loss = train_model(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, input_emb_optimizer, output_emb_optimizer, beam_length, args.teacher_forcing_ratio)
             #if args.attn == 'N':
             #    print('Model with no attention')
             #    inc_loss = train_model_encdec(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, beam_length, args.teacher_forcing_ratio)
