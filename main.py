@@ -40,6 +40,7 @@ def _parse_args():
     parser.add_argument('--attn', type=str, default='N')
     parser.add_argument('--beam_size', type=int, default=3, help='beam size for beam search')
     parser.add_argument('--word_vecs_path', type=str, default='data/glove.6B.300d-relativized.txt', help='path to word vectors file')
+    parser.add_argument('--copy', type=str, default='Y', help='Turns on copying mechanism')
     args = parser.parse_args()
     return args
 
@@ -113,8 +114,8 @@ if __name__ == '__main__':
         #pred = decoder.decode_beam(dev_data_indexed)
         #pred_original = decoder.decode(dev_data_indexed)
         #print("pred: ", pred_original)
-        print("BEGIN EVALUATION")
-        evaluate(dev_data_indexed, decoder)
+        #print("BEGIN EVALUATION")
+        #evaluate(dev_data_indexed, decoder)
         #test = [(' '.join(d.y_toks)) for x in pred for d in x]
         #for x in pred:
             #for d in x:

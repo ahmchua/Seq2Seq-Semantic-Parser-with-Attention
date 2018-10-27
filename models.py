@@ -171,10 +171,8 @@ class AttnRNNDecoder(nn.Module):
 
         encoder_outputs = encoder_outputs.squeeze()
         # Calculate eij
-
         attn_weight = self.attn(encoder_outputs).squeeze()
         attn_weight = torch.transpose(attn_weight, 0, 1)
-
         attn_energy = torch.matmul(h_bar, attn_weight)
         attn_score = F.softmax(attn_energy, dim = 1)
 
@@ -183,7 +181,95 @@ class AttnRNNDecoder(nn.Module):
 
         # Concatenate the context vector ci and the hidden state hbar
         attn_hid_combined = torch.cat((context, h_bar), 1)
-
         attn_hid_transformed = self.attn_hid(attn_hid_combined)
         out = self.ff(attn_hid_transformed)
         return self.softmax(out), (h,c), context
+
+# One-layer RNN decoder for batched inputs -- handles multiple sentences at once. You're free to call it with a
+# leading dimension of 1 (batch size 1) but it does expect this dimension.
+class CopyAttnRNNDecoder(nn.Module):
+    # Parameters: input size (should match embedding layer), hidden size for the LSTM, dropout rate for the RNN,
+    # and a boolean flag for whether or not we're using a bidirectional encoder
+    def __init__(self, input_size, hidden_size_enc, hidden_size_dec, out, dropout):
+        super(CopyAttnRNNDecoder, self).__init__()
+        self.input_size = input_size
+        self.hidden_size_enc = hidden_size_enc
+        self.hidden_size_dec = hidden_size_dec
+        self.out = out
+
+        self.rnn = nn.LSTM(input_size, hidden_size_dec, num_layers=1, batch_first=True,dropout=dropout)
+
+        # To calculate Pvocab
+        self.attn = nn.Linear(hidden_size_enc, hidden_size_dec)
+        self.attn_hid = nn.Linear(hidden_size_dec + hidden_size_enc, hidden_size_dec)
+        self.ff = nn.Linear(hidden_size_dec, out)
+        self.softmax = nn.Softmax(dim = 1)
+
+        # To calculate pgen
+        self.Wh = nn.Linear(hidden_size_enc, 1)
+        self.Ws = nn.Linear(hidden_size_dec, 1)
+        self.Wx = nn.Linear(input_size,1)
+        self.bptr = nn.Linear(1,1)
+        self.sigmoid = nn.Sigmoid()
+
+
+        self.init_weight()
+
+    # Initializes weight matrices using Xavier initialization
+    def init_weight(self):
+        nn.init.xavier_uniform_(self.rnn.weight_hh_l0, gain=1)
+        nn.init.xavier_uniform_(self.rnn.weight_ih_l0, gain=1)
+        nn.init.constant_(self.rnn.bias_hh_l0, 0)
+        nn.init.constant_(self.rnn.bias_ih_l0, 0)
+        nn.init.xavier_uniform_(self.attn.weight)
+        nn.init.xavier_uniform_(self.attn_hid.weight)
+        nn.init.xavier_uniform_(self.ff.weight)
+        nn.init.xavier_uniform_(self.Wh.weight)
+        nn.init.xavier_uniform_(self.Ws.weight)
+        nn.init.xavier_uniform_(self.Wx.weight)
+        nn.init.xavier_uniform_(self.bptr.weight)
+
+
+    # Like the encoder, the embedding layer is outside the decoder. So, it is assumed here
+    # that the input is a word embedding
+    # Input is [embed(e_{t-1}; c_{t-1}), h_{t-1}]
+    def forward(self, input, hidden, encoder_outputs, input_output_map):
+        # Show the example to the decoder and get hidden state
+        output, (h,c) = self.rnn(input, hidden)
+        h_bar = h[0]
+
+        encoder_outputs = encoder_outputs.squeeze()
+        # Calculate eij
+        attn_weight = self.attn(encoder_outputs).squeeze()
+        attn_weight = torch.transpose(attn_weight, 0, 1)
+        attn_energy = torch.matmul(h_bar, attn_weight)
+        attn_score = F.softmax(attn_energy, dim = 1)
+
+        # Calculate the context vector, ci
+        context = torch.matmul(attn_score, encoder_outputs)
+        #print("attn_score: ", attn_score.size())
+
+        # Concatenate the context vector ci and the hidden state hbar
+        # Calculate p_vocab with two hidden layers
+        attn_hid_combined = torch.cat((context, h_bar), 1)
+        attn_hid_transformed = self.attn_hid(attn_hid_combined)
+        out = self.ff(attn_hid_transformed)
+        p_vocab = self.softmax(out)
+        #print("context: ", context)
+
+        # Calculate p_gen
+        constant = torch.as_tensor([1.0])
+        #p_gen = self.sigmoid(self.Wh(context) + self.Ws(h_bar) + self.Wx(input))
+        p_gen = self.sigmoid(self.Wh(context))
+        p_gen = p_gen.squeeze(0)
+
+        # Calculate P(W)
+        ai = torch.matmul(attn_score, input_output_map)
+        #print("size of ai: ", ai.size())
+        #print("size of p_vocab: ", p_vocab.size())
+        Pw = p_gen * p_vocab + (1-p_gen) * ai
+        Pw = torch.log(Pw)
+        #print("Pw: ", Pw)
+        #print("size of Pw: ", Pw.size())
+        for_inference = torch.cat((p_gen*p_vocab, (1-p_gen)*attn_score), 1)
+        return Pw, (h,c), context#, for_inference
