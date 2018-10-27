@@ -260,7 +260,7 @@ class CopyAttnRNNDecoder(nn.Module):
         # Calculate p_gen
         constant = torch.as_tensor([1.0])
         #p_gen = self.sigmoid(self.Wh(context) + self.Ws(h_bar) + self.Wx(input))
-        p_gen = self.sigmoid(self.Wh(context))
+        p_gen = self.sigmoid(self.Wh(context) + self.Ws(h_bar))
         p_gen = p_gen.squeeze(0)
 
         # Calculate P(W)
@@ -272,4 +272,5 @@ class CopyAttnRNNDecoder(nn.Module):
         #print("Pw: ", Pw)
         #print("size of Pw: ", Pw.size())
         for_inference = torch.cat((p_gen*p_vocab, (1-p_gen)*attn_score), 1)
-        return Pw, (h,c), context#, for_inference
+        #print("for_inference: ", for_inference)
+        return Pw, (h,c), context, for_inference
