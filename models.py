@@ -17,6 +17,9 @@ class EmbeddingLayer(nn.Module):
         self.dropout = nn.Dropout(embedding_dropout_rate)
         self.word_embedding = nn.Embedding(full_dict_size, input_dim)
 
+    def add_pretrained(self, word_vectors):
+        self.word_embedding.from_pretrained(word_vectors, freeze = False)
+
     # Takes either a non-batched input [sent len x input_dim] or a batched input
     # [batch size x sent len x input dim]
     def forward(self, input):
@@ -168,26 +171,19 @@ class AttnRNNDecoder(nn.Module):
 
         encoder_outputs = encoder_outputs.squeeze()
         # Calculate eij
-        #print("encoder_outputs size: ", encoder_outputs.size())
-        #print("encoder_outputs: ", encoder_outputs)
+
         attn_weight = self.attn(encoder_outputs).squeeze()
         attn_weight = torch.transpose(attn_weight, 0, 1)
-        #print("attn_weight: ", attn_weight)
-        #print("attn_weight size: ", attn_weight.size())
-        #print("h_bar: ", h_bar)
-        #print("h_bar size: ", h_bar.size())
+
         attn_energy = torch.matmul(h_bar, attn_weight)
         attn_score = F.softmax(attn_energy, dim = 1)
 
-        #print("attn_score.size(): ", attn_score.size())
         # Calculate the context vector, ci
         context = torch.matmul(attn_score, encoder_outputs)
-        #print("Context.size(): ", context.size())
-        #print("hbar.size(): ", h_bar.size())
+
         # Concatenate the context vector ci and the hidden state hbar
         attn_hid_combined = torch.cat((context, h_bar), 1)
-        #print("attn_combined: ", attn_hid_combined)
-        #print("attn_combined size: ", attn_hid_combined.size())
+
         attn_hid_transformed = self.attn_hid(attn_hid_combined)
         out = self.ff(attn_hid_transformed)
         return self.softmax(out), (h,c), context

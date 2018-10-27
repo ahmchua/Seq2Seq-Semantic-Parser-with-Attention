@@ -17,7 +17,6 @@ class Seq2SeqSemanticParser(object):
         self.model_dec = model_dec
         self.args = args
         self.output_indexer = output_indexer
-        # Add any args you need here
 
     def decode(self, test_data):
         self.model_input_emb.eval()
@@ -79,6 +78,8 @@ class Seq2SeqSemanticParserAttn(object):
         self.model_output_emb.eval()
         self.model_dec.eval()
 
+        self.model_input_emb.zero_grad()
+        self.model_output_emb.zero_grad()
         self.model_enc.zero_grad()
         self.model_dec.zero_grad()
 
@@ -93,6 +94,8 @@ class Seq2SeqSemanticParserAttn(object):
         for ex in test_data:
             count = 0
             y_toks =[]
+            self.model_input_emb.zero_grad()
+            self.model_output_emb.zero_grad()
             self.model_enc.zero_grad()
             self.model_dec.zero_grad()
 
@@ -127,16 +130,17 @@ class Seq2SeqSemanticParserAttn(object):
         self.model_output_emb.eval()
         self.model_dec.eval()
 
+        self.model_input_emb.zero_grad()
+        self.model_output_emb.zero_grad()
         self.model_enc.zero_grad()
         self.model_dec.zero_grad()
 
         SOS_token = 1
-        #EOS_token = self.output_indexer.index_of('<EOS>')
-        EOS_token = 8
+        EOS_token = self.output_indexer.index_of('<EOS>')
         SOS_label = self.output_indexer.get_object(SOS_token)
 
         beam = Beam(self.beam_size)
-        beam_temp = Beam(self.beam_size)
+        #beam_temp = Beam(self.beam_size)
 
         derivations = []
         ex_count = 0
@@ -162,6 +166,7 @@ class Seq2SeqSemanticParserAttn(object):
             beam.add(dec_input, 0.0, dec_hidden, [])
 
             while count <= self.args.decoder_len_limit:
+                beam_temp = Beam(self.beam_size)
                 # Check if all dec_input items are EOS, if so, break.
                 if beam.all_EOS(EOS_token):
                     break
@@ -189,7 +194,6 @@ class Seq2SeqSemanticParserAttn(object):
                         #print("current beam score: ", beam_temp.scores)
                         #print("current beam path: ", beam_temp.path)
                 beam = beam_temp
-                beam_temp = Beam(self.beam_size)
                 count = count + 1
             ex_count = ex_count + 1
 
@@ -392,12 +396,21 @@ def train_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_
 
 
 
-def train_iters(train_data, epochs, input_indexer, output_indexer, args, beam_length, out):
+def train_iters(train_data, epochs, input_indexer, output_indexer, args, beam_length, out, word_vectors):
 
     # Create encoder, decoder and embedding layers
     model_input_emb = EmbeddingLayer(args.input_dim, len(input_indexer), args.emb_dropout)
     model_enc = RNNEncoder(args.input_dim, args.hidden_size, args.rnn_dropout, args.bidirectional)
     model_output_emb = EmbeddingLayer(args.input_dim, len(output_indexer), args.emb_dropout)
+
+    # Convert word_vectors to x_tensor
+    word_vectors = torch.FloatTensor(word_vectors.vectors)
+
+    # Initialize embedding layer with glove read_word_embeddings
+    #model_input_emb.add_pretrained(word_vectors)
+    #model_output_emb.add_pretrained(word_vectors)
+
+    # Select which decoder model based on attention vs. non-attention
     if args.attn == 'N':
         print("Model with no attention")
         model_dec = RNNDecoder(args.input_dim, args.hidden_size, out, dropout = 0 )
