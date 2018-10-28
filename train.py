@@ -265,6 +265,7 @@ class Seq2SeqSemanticParserAttnCopy(object):
                     source_word_idx = top_ind.item() - len(self.output_indexer)
                     copy_word_idx = ex.x_indexed[source_word_idx]
                     y_label = self.input_indexer.get_object(copy_word_idx)
+                    #dec_input = torch.as_tensor([[self.output_indexer.index_of(UNK_SYMBOL)]])
                 if dec_input.item() != EOS_token:
                     y_toks.append(y_label)
                 count = count + 1
@@ -396,6 +397,12 @@ def train_model_encdec(ex, model_input_emb, model_enc, model_output_emb, model_d
     #print("Train output length: %i" % np.max(np.asarray([len(ex.y_indexed) for ex in train_data])))
     #print("Train matrix: %s; shape = %s" % (all_train_input_data, all_train_input_data.shape))
 
+    # Set all models to training mode
+    model_input_emb.train()
+    model_enc.train()
+    model_output_emb.train()
+    model_dec.train()
+
     # Initialize loss
     loss = 0
     SOS_token = 1
@@ -445,6 +452,12 @@ def train_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_
     SOS_token = 1
     EOS_token = 2
     criterion = torch.nn.NLLLoss()
+
+    # Set all models to training mode
+    model_input_emb.train()
+    model_enc.train()
+    model_output_emb.train()
+    model_dec.train()
 
     model_input_emb.zero_grad()
     model_output_emb.zero_grad()
@@ -501,6 +514,12 @@ def train_copy_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec,
     # Unpack packed items
     #print("TRAINING ATTENTION WITH COPY")
     input_indexer, output_indexer = indexers
+
+    # Set all models to training mode
+    model_input_emb.train()
+    model_enc.train()
+    model_output_emb.train()
+    model_dec.train()
 
     loss = 0
     SOS_token = 1
@@ -562,7 +581,10 @@ def train_copy_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec,
 
 
 
-def train_iters(train_data, epochs, input_indexer, output_indexer, args, beam_length, out, word_vectors):
+def train_iters(train_data, dev_data, epochs, input_indexer, output_indexer, args, beam_length, out, word_vectors):
+    # Write results to file for readability
+    f_name = args.results_path
+    f = open(f_name, 'w')
 
     # Create encoder, decoder and embedding layers
     model_input_emb = EmbeddingLayer(args.input_dim, len(input_indexer), args.emb_dropout)
@@ -571,6 +593,7 @@ def train_iters(train_data, epochs, input_indexer, output_indexer, args, beam_le
 
     # Convert word_vectors to x_tensor
     word_vectors = torch.FloatTensor(word_vectors.vectors)
+    print("word_vectors.size(): ", word_vectors.size())
 
     # Create tuples
     indexers = (input_indexer, output_indexer)
@@ -594,11 +617,7 @@ def train_iters(train_data, epochs, input_indexer, output_indexer, args, beam_le
         #model_dec = AttnRNNDecoder(args.input_dim, args.hidden_size * 2, args.hidden_size, out, args.rnn_dropout)
         train_model = train_attn
 
-    # Set all models to training mode
-    model_input_emb.train()
-    model_enc.train()
-    model_output_emb.train()
-    model_dec.train()
+
 
     #Initialize optimizers
     input_emb_optimizer = optim.Adam(model_input_emb.parameters(), lr=args.lr)
@@ -608,11 +627,36 @@ def train_iters(train_data, epochs, input_indexer, output_indexer, args, beam_le
 
     count = 0.0
     for i in range(epochs):
+        print("epoch: ", i)
         for ex in train_data:
             if args.copy == 'Y':
                 inc_loss = train_model(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, input_emb_optimizer, output_emb_optimizer, beam_length, args.teacher_forcing_ratio, indexers)
             else:
                 inc_loss = train_model(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, input_emb_optimizer, output_emb_optimizer, beam_length, args.teacher_forcing_ratio)
+
+            if count %25 ==0:
+                print ("loss: ", inc_loss)
+            count = count + 1
+
+        if args.copy == 'Y':
+            decoder = Seq2SeqSemanticParserAttnCopy(model_input_emb, model_enc, model_output_emb, model_dec, args, indexers)
+        elif args.attn == 'N':
+            decoder = Seq2SeqSemanticParser(model_input_emb, model_enc, model_output_emb, model_dec, args, output_indexer)
+        elif args.attn == 'Y':
+            decoder = Seq2SeqSemanticParserAttn(model_input_emb, model_enc, model_output_emb, model_dec, args, output_indexer)
+
+        print("Begin Evaluation for epoch: ", i)
+        denotation_acc = evaluate(dev_data, decoder)
+        f.write(str(denotation_acc)[0:6] + '\n')
+        if args.copy == 'Y' and denotation_acc >=0.65:
+            torch.save(model_input_emb.state_dict(), 'copy_input_emb_'+ str(denotation_acc)[0:6]+args.results_path+'.pth.tar')
+            torch.save(model_output_emb.state_dict(), 'copy_output_emb_'+ str(denotation_acc)[0:6]+args.results_path+'.pth.tar')
+            torch.save(model_enc.state_dict(), 'copy_enc_'+ str(denotation_acc)[0:6]+args.results_path+'.pth.tar')
+            torch.save(model_dec.state_dict(), 'copy_dec_'+ str(denotation_acc)[0:6]+args.results_path+'.pth.tar')
+
+    return decoder
+
+
 
             #if args.attn == 'N':
             #    print('Model with no attention')
@@ -620,17 +664,7 @@ def train_iters(train_data, epochs, input_indexer, output_indexer, args, beam_le
             #elif args.attn == 'Y':
             #    print('Model with attention')
             #    inc_loss = train_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, beam_length, args.teacher_forcing_ratio)
-            if count %25 ==0:
-                print ("loss: ", inc_loss)
-            count = count + 1
 
-        print("epoch: ", i)
-    if args.copy == 'Y':
-        return Seq2SeqSemanticParserAttnCopy(model_input_emb, model_enc, model_output_emb, model_dec, args, indexers)
-    elif args.attn == 'N':
-        return Seq2SeqSemanticParser(model_input_emb, model_enc, model_output_emb, model_dec, args, output_indexer)
-    elif args.attn == 'Y':
-        return Seq2SeqSemanticParserAttn(model_input_emb, model_enc, model_output_emb, model_dec, args, output_indexer)
 
 # Evaluates decoder against the data in test_data (could be dev data or test data). Prints some output
 # every example_freq examples. Writes predictions to outfile if defined. Evaluation requires
@@ -649,11 +683,11 @@ def evaluate(test_data, decoder, example_freq=50, outfile=None):
     for i, ex in enumerate(test_data):
         #print("i: ", i)
         #print(selected_derivs[i])
-        if i % example_freq == 0:
-            print('Example %d' % i)
-            print('  x      = "%s"' % ex.x)
-            print('  y_tok  = "%s"' % ex.y_tok)
-            print('  y_pred = "%s"' % selected_derivs[i].y_toks)
+        #if i % example_freq == 0:
+        #    print('Example %d' % i)
+        #    print('  x      = "%s"' % ex.x)
+        #    print('  y_tok  = "%s"' % ex.y_tok)
+        #    print('  y_pred = "%s"' % selected_derivs[i].y_toks)
         # Compute accuracy metrics
         y_pred = ' '.join(selected_derivs[i].y_toks)
         # Check exact match
@@ -668,13 +702,18 @@ def evaluate(test_data, decoder, example_freq=50, outfile=None):
     print("Exact logical form matches: %s" % (render_ratio(num_exact_match, len(test_data))))
     print("Token-level accuracy: %s" % (render_ratio(num_tokens_correct, total_tokens)))
     print("Denotation matches: %s" % (render_ratio(num_denotation_match, len(test_data))))
+    print("Denotation abby: %.3f"% (denotation_acc(num_denotation_match, len(test_data))))
     # Writes to the output file if needed
     if outfile is not None:
         with open(outfile, "w") as out:
             for i, ex in enumerate(test_data):
                 out.write(ex.x + "\t" + " ".join(selected_derivs[i].y_toks) + "\n")
         out.close()
+    return denotation_acc(num_denotation_match, len(test_data))
 
 
 def render_ratio(numer, denom):
     return "%i / %i = %.3f" % (numer, denom, float(numer)/denom)
+
+def denotation_acc(numer, denom):
+    return float(numer)/denom

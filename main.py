@@ -41,6 +41,7 @@ def _parse_args():
     parser.add_argument('--beam_size', type=int, default=3, help='beam size for beam search')
     parser.add_argument('--word_vecs_path', type=str, default='data/glove.6B.300d-relativized.txt', help='path to word vectors file')
     parser.add_argument('--copy', type=str, default='Y', help='Turns on copying mechanism')
+    parser.add_argument('--results_path', type=str, default='denotation_acc.txt', help='Name for experiment')
     args = parser.parse_args()
     return args
 
@@ -103,11 +104,13 @@ if __name__ == '__main__':
     else:
         beam_length = 1
         out = len(output_indexer)
+        print(output_indexer.index_of(UNK_SYMBOL))
         #out = len(input_indexer)
         #train_data_indexed = train_data_indexed[0:50]
         #test_data_indexed  = test_data_indexed[0:1]
         #dev_data_indexed = dev_data_indexed[0:10]
-        decoder = train_iters(train_data_indexed, args.epochs, input_indexer, output_indexer, args, beam_length, out, word_vectors)
+        print(word_vectors)
+        decoder = train_iters(train_data_indexed, dev_data_indexed, args.epochs, input_indexer, output_indexer, args, beam_length, out, word_vectors)
         #test = decoder.decode_beam(dev_data_indexed)
         # Next line tests copy act
         #decoder = train_iters(train_data_indexed, args.epochs, input_indexer, input_indexer, args, beam_length, out, word_vectors)
@@ -115,8 +118,8 @@ if __name__ == '__main__':
         #pred = decoder.decode_beam(dev_data_indexed)
         #pred_original = decoder.decode(dev_data_indexed)
         #print("pred: ", pred_original)
-        print("BEGIN EVALUATION")
-        evaluate(dev_data_indexed, decoder)
+        #print("BEGIN EVALUATION")
+        #evaluate(dev_data_indexed, decoder)
         #test = [(' '.join(d.y_toks)) for x in pred for d in x]
         #for x in pred:
             #for d in x:
