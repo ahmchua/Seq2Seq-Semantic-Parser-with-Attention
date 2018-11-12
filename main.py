@@ -10,6 +10,8 @@ from data import *
 from utils import *
 from train import *
 from sentiment_data import *
+import pickle
+import sys
 
 def _parse_args():
     parser = argparse.ArgumentParser(description='main.py')
@@ -30,7 +32,7 @@ def _parse_args():
     parser.add_argument('--batch_size', type=int, default=2, help='batch size')
     # 65 is all you need for GeoQuery
     parser.add_argument('--decoder_len_limit', type=int, default=65, help='output length limit of the decoder')
-    parser.add_argument('--input_dim', type=int, default=100, help='input vector dimensionality')
+    parser.add_argument('--input_dim', type=int, default=300, help='input vector dimensionality; original input dim is 100')
     parser.add_argument('--output_dim', type=int, default=100, help='output vector dimensionality')
     parser.add_argument('--hidden_size', type=int, default=200, help='hidden state dimensionality')
     parser.add_argument('--emb_dropout', type=int, default=0.2, help='Dropout for embedding layer')
@@ -39,9 +41,10 @@ def _parse_args():
     parser.add_argument('--teacher_forcing_ratio', type=float, default=1.0)
     parser.add_argument('--attn', type=str, default='N')
     parser.add_argument('--beam_size', type=int, default=3, help='beam size for beam search')
-    parser.add_argument('--word_vecs_path', type=str, default='data/glove.6B.300d-relativized.txt', help='path to word vectors file')
-    parser.add_argument('--copy', type=str, default='Y', help='Turns on copying mechanism')
+    parser.add_argument('--word_vecs_path', type=str, default='data/glove.6B.300d.txt', help='path to word vectors file')
+    parser.add_argument('--copy', type=str, default='N', help='Turns on copying mechanism')
     parser.add_argument('--results_path', type=str, default='denotation_acc.txt', help='Name for experiment')
+    parser.add_argument('--trainvtest', type=str, default='test', help='Turns on train vs. load existing model')
     args = parser.parse_args()
     return args
 
@@ -95,6 +98,7 @@ if __name__ == '__main__':
         print(train_data_indexed[i])
     print(type(train_data_indexed[2]))
     print(output_indexer.get_object(3))
+
     if args.do_nearest_neighbor:
         print("Doing nearest neighbor")
         decoder = NearestNeighborSemanticParser(train_data_indexed)
@@ -104,27 +108,33 @@ if __name__ == '__main__':
     else:
         beam_length = 1
         out = len(output_indexer)
-        print(output_indexer.index_of(UNK_SYMBOL))
-        #out = len(input_indexer)
-        #train_data_indexed = train_data_indexed[0:50]
-        #test_data_indexed  = test_data_indexed[0:1]
-        #dev_data_indexed = dev_data_indexed[0:10]
-        print(word_vectors)
-        decoder = train_iters(train_data_indexed, dev_data_indexed, args.epochs, input_indexer, output_indexer, args, beam_length, out, word_vectors)
-        #test = decoder.decode_beam(dev_data_indexed)
-        # Next line tests copy act
-        #decoder = train_iters(train_data_indexed, args.epochs, input_indexer, input_indexer, args, beam_length, out, word_vectors)
+        word_vectors_in = make_word_wectors(word_vectors, input_indexer, args.input_dim)
+        word_vectors_out = make_word_wectors(word_vectors, output_indexer, args.input_dim)
+        if args.trainvtest == 'train':
+            decoder = train_iters(train_data_indexed, dev_data_indexed, test_data_indexed, args.epochs, input_indexer, output_indexer, args, beam_length, out, word_vectors_in, word_vectors_out)
+        elif args.trainvtest == 'test':
+            model_input_emb = EmbeddingLayer(args.input_dim, len(input_indexer), args.emb_dropout)
+            model_enc = RNNEncoder(args.input_dim, args.hidden_size, args.rnn_dropout, args.bidirectional)
+            model_output_emb = EmbeddingLayer(args.input_dim, len(output_indexer), args.emb_dropout)
+            model_dec = CopyAttnRNNDecoder(args.input_dim + args.hidden_size*2, args.hidden_size * 2, args.hidden_size, out, args.rnn_dropout)
 
-        #pred = decoder.decode_beam(dev_data_indexed)
-        #pred_original = decoder.decode(dev_data_indexed)
-        #print("pred: ", pred_original)
-        #print("BEGIN EVALUATION")
-        #evaluate(dev_data_indexed, decoder)
-        #test = [(' '.join(d.y_toks)) for x in pred for d in x]
-        #for x in pred:
-            #for d in x:
-                #print("y_toks: ", d.y_toks)
-        #for i in test_data_indexed:
-            #print(i.y_tok)
-    #print("=======FINAL EVALUATION=======")
-    #evaluate(test_data_indexed, decoder, outfile="geo_test_output.tsv")
+            for name, param in model_input_emb.named_parameters():
+                if param.requires_grad:
+                    print(name, param.data)
+
+            indexers = (input_indexer, output_indexer)
+            model_input_emb.load_state_dict(torch.load('TF2-0.99_copy_input_emb_0.775.pth.tar'))
+            model_output_emb.load_state_dict(torch.load('TF2-0.99_copy_output_emb_0.775.pth.tar'))
+            model_enc.load_state_dict(torch.load('TF2-0.99_copy_enc_0.775.pth.tar'))
+            model_dec.load_state_dict(torch.load('TF2-0.99_copy_dec_0.775.pth.tar'))
+            decoder = Seq2SeqSemanticParserAttnCopy(model_input_emb, model_enc, model_output_emb, model_dec, args, indexers)
+            print("AFTER LOAD: ", model_input_emb.parameters())
+            for name, param in model_input_emb.named_parameters():
+                if param.requires_grad:
+                    print(name, param.data)
+
+    print("=======FINAL EVALUATION DEV =======")
+    evaluate(dev_data_indexed, decoder, outfile="dev_geo_test_output.tsv")
+    print("=======FINAL EVALUATION TEST =======")
+    out_name = "geo_test_output_"+str(args.teacher_forcing_ratio)+".tsv"
+    evaluate(test_data_indexed, decoder, outfile=out_name)

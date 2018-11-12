@@ -18,7 +18,7 @@ class EmbeddingLayer(nn.Module):
         self.word_embedding = nn.Embedding(full_dict_size, input_dim)
 
     def add_pretrained(self, word_vectors):
-        self.word_embedding.from_pretrained(word_vectors, freeze = False)
+        self.word_embedding = self.word_embedding.from_pretrained(word_vectors, freeze = False)
 
     # Takes either a non-batched input [sent len x input_dim] or a batched input
     # [batch size x sent len x input dim]
@@ -258,8 +258,8 @@ class CopyAttnRNNDecoder(nn.Module):
         #print("context: ", context)
 
         # Calculate p_gen
-        constant = torch.as_tensor([1.0])
-        #p_gen = self.sigmoid(self.Wh(context) + self.Ws(h_bar) + self.Wx(input))
+        #constant = torch.as_tensor([1.0])
+        #p_gen = self.sigmoid(self.Wh(context) + self.Ws(h_bar) + self.Wx(input)) # CHANGE
         p_gen = self.sigmoid(self.Wh(context) + self.Ws(h_bar))
         p_gen = p_gen.squeeze(0)
 

@@ -379,23 +379,8 @@ def decode_copy_attn(y_index, hidden, model_output_emb, model_dec, context_vec, 
     dec_input_prob = top_val.detach()
     return output, dec_input, dec_input_prob, hidden, context_vec, for_inference
 
-def train_model_encdec(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, beam_length, teacher_forcing_ratio):
-    # Sort in descending order by x_indexed, essential for pack_padded_sequence
-    #train_data.sort(key=lambda ex: len(ex.x_indexed), reverse=True)
-    #test_data.sort(key=lambda ex: len(ex.x_indexed), reverse=True)
+def train_model_encdec(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, input_emb_optimizer, output_emb_optimizer,beam_length, teacher_forcing_ratio):
 
-    # Create indexed input
-    #input_max_len = np.max(np.asarray([len(ex.x_indexed) for ex in train_data]))
-    #all_train_input_data = make_padded_input_tensor(train_data, input_indexer, input_max_len, args.reverse_input)
-    #all_test_input_data = make_padded_input_tensor(test_data, input_indexer, input_max_len, args.reverse_input)
-
-    #output_max_len = np.max(np.asarray([len(ex.y_indexed) for ex in train_data]))
-    #all_train_output_data = make_padded_output_tensor(train_data, output_indexer, output_max_len)
-    #all_test_output_data = make_padded_output_tensor(test_data, output_indexer, output_max_len)
-
-    #print("Train length: %i" % input_max_len)
-    #print("Train output length: %i" % np.max(np.asarray([len(ex.y_indexed) for ex in train_data])))
-    #print("Train matrix: %s; shape = %s" % (all_train_input_data, all_train_input_data.shape))
 
     # Set all models to training mode
     model_input_emb.train()
@@ -412,6 +397,8 @@ def train_model_encdec(ex, model_input_emb, model_enc, model_output_emb, model_d
     # Loop over epochs, loop over examples, given some indexed words, call encode_input_for_decoder, then call your
     # decoder, accumulate losses, update parameters
 
+    model_input_emb.zero_grad()
+    model_output_emb.zero_grad()
     model_enc.zero_grad()
     model_dec.zero_grad()
 
@@ -438,12 +425,12 @@ def train_model_encdec(ex, model_input_emb, model_enc, model_output_emb, model_d
         if teacher_forcing:
             dec_input = y_tensor[y_ex].unsqueeze(0).unsqueeze(0)
 
-    #print("predicted: ", y_temp)
-    #print("actual: ", ex.x_indexed, '\n')
-
     loss.backward()
     enc_optimizer.step()
     dec_optimizer.step()
+    input_emb_optimizer.step()
+    output_emb_optimizer.step()
+
 
     return loss
 
@@ -472,9 +459,6 @@ def train_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_
     (enc_output, enc_context_mask, enc_hidden, enc_bi_hidden) = encode_input_for_decoder(x_tensor, inp_lens_tensor, model_input_emb, model_enc)
     dec_hidden = enc_hidden
     context_vec = enc_bi_hidden[0]
-    #print("hidden_enc size: ", enc_bi_hidden[0].size())
-    #print("context_vec: ", context_vec)
-    #print("enc_outputs size: ", enc_output.size())
 
     dec_input = torch.as_tensor([[SOS_token]])
     y_temp = []
@@ -489,9 +473,6 @@ def train_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_
 
     for y_ex in range(len(y_tensor)):
         dec_output, dec_input, dec_input_val, dec_hidden, context_vec = decode_attn(dec_input, dec_hidden, model_output_emb, model_dec, context_vec, enc_output, beam_length)
-        #dec_output = dec_output.squeeze()
-        #print("dec_output: ", dec_output.squeeze(0))
-        #print("y_tensor[y_ex]", y_tensor[y_ex].unsqueeze(0))
         loss += criterion(dec_output, y_tensor[y_ex].unsqueeze(0))
         y_temp.append(dec_input.item())
         if dec_input == EOS_token:
@@ -504,9 +485,6 @@ def train_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_
     output_emb_optimizer.step()
     enc_optimizer.step()
     dec_optimizer.step()
-
-    #print("predicted: ", y_temp)
-    #print("actual: ", ex.x_indexed, '\n')
 
     return loss
 
@@ -540,9 +518,6 @@ def train_copy_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec,
     (enc_output, enc_context_mask, enc_hidden, enc_bi_hidden) = encode_input_for_decoder(x_tensor, inp_lens_tensor, model_input_emb, model_enc)
     dec_hidden = enc_hidden
     context_vec = enc_bi_hidden[0]
-    #print("hidden_enc size: ", enc_bi_hidden[0].size())
-    #print("context_vec: ", context_vec)
-    #print("enc_outputs size: ", enc_output.size())
 
     dec_input = torch.as_tensor([[SOS_token]])
     y_temp = []
@@ -557,11 +532,9 @@ def train_copy_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec,
 
     for y_ex in range(len(y_tensor)):
         dec_output, dec_input, dec_input_val, dec_hidden, context_vec, for_inference = decode_copy_attn(dec_input, dec_hidden, model_output_emb, model_dec, context_vec, enc_output, beam_length, input_output_map)
-        #dec_output = dec_output.squeeze()
-        #print("dec_output: ", dec_output.squeeze(0))
-        #print("y_tensor[y_ex]", y_tensor[y_ex].unsqueeze(0))
         loss += criterion(dec_output, y_tensor[y_ex].unsqueeze(0))
         y_temp.append(dec_input.item())
+        #teacher_forcing = True if random.random() <= teacher_forcing_ratio else False
         if dec_input == EOS_token:
             break
         if teacher_forcing:
@@ -573,17 +546,15 @@ def train_copy_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec,
     enc_optimizer.step()
     dec_optimizer.step()
 
-    #print("predicted: ", y_temp)
-    #print("actual: ", ex.x_indexed, '\n')
 
     return loss
 
 
 
 
-def train_iters(train_data, dev_data, epochs, input_indexer, output_indexer, args, beam_length, out, word_vectors):
+def train_iters(train_data, dev_data, test_data, epochs, input_indexer, output_indexer, args, beam_length, out, word_vectors_in, word_vectors_out):
     # Write results to file for readability
-    f_name = args.results_path
+    f_name = args.results_path+".txt"
     f = open(f_name, 'w')
 
     # Create encoder, decoder and embedding layers
@@ -592,26 +563,27 @@ def train_iters(train_data, dev_data, epochs, input_indexer, output_indexer, arg
     model_output_emb = EmbeddingLayer(args.input_dim, len(output_indexer), args.emb_dropout)
 
     # Convert word_vectors to x_tensor
-    word_vectors = torch.FloatTensor(word_vectors.vectors)
-    print("word_vectors.size(): ", word_vectors.size())
+    word_vectors_in = torch.FloatTensor(word_vectors_in)
+    word_vectors_out = torch.FloatTensor(word_vectors_out)
 
     # Create tuples
     indexers = (input_indexer, output_indexer)
 
     # Initialize embedding layer with glove read_word_embeddings
-    #model_input_emb.add_pretrained(word_vectors)
-    #model_output_emb.add_pretrained(word_vectors)
+    model_input_emb.add_pretrained(word_vectors_in)
+    model_output_emb.add_pretrained(word_vectors_out)
 
     # Select which decoder model based on attention vs. non-attention
     if args.copy == 'Y':
         print("Model with copy")
         model_dec = CopyAttnRNNDecoder(args.input_dim + args.hidden_size*2, args.hidden_size * 2, args.hidden_size, out, args.rnn_dropout)
+        #model_dec = CopyMLPAttnRNNDecoder(args.input_dim + args.hidden_size*2, args.hidden_size * 2, args.hidden_size, out, args.rnn_dropout) #CHANGE
         train_model = train_copy_attn
-    elif args.attn == 'N':
+    elif args.attn == 'N' and args.copy == 'N':
         print("Model with no attention")
         model_dec = RNNDecoder(args.input_dim, args.hidden_size, out, dropout = 0 )
         train_model = train_model_encdec
-    elif args.attn == 'Y':
+    elif args.attn == 'Y' and args.copy == 'N':
         print("Model with attention")
         model_dec = AttnRNNDecoder(args.input_dim + args.hidden_size*2, args.hidden_size * 2, args.hidden_size, out, args.rnn_dropout)  #CHANGE
         #model_dec = AttnRNNDecoder(args.input_dim, args.hidden_size * 2, args.hidden_size, out, args.rnn_dropout)
@@ -625,12 +597,17 @@ def train_iters(train_data, dev_data, epochs, input_indexer, output_indexer, arg
     output_emb_optimizer = optim.Adam(model_output_emb.parameters(), lr=args.lr)
     dec_optimizer = optim.Adam(model_dec.parameters(), lr=args.lr)
 
+    teacher_forcing_ratio_orig = args.teacher_forcing_ratio
+
     count = 0.0
+    count_ss = 0.0
+    teacher_forcing_ratio = 1.0
     for i in range(epochs):
         print("epoch: ", i)
-        for ex in train_data:
+        teacher_forcing_ratio = teacher_forcing_ratio_orig**i
+        for ex in train_data:        
             if args.copy == 'Y':
-                inc_loss = train_model(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, input_emb_optimizer, output_emb_optimizer, beam_length, args.teacher_forcing_ratio, indexers)
+                inc_loss = train_model(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, input_emb_optimizer, output_emb_optimizer, beam_length, teacher_forcing_ratio, indexers)
             else:
                 inc_loss = train_model(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, input_emb_optimizer, output_emb_optimizer, beam_length, args.teacher_forcing_ratio)
 
@@ -648,23 +625,27 @@ def train_iters(train_data, dev_data, epochs, input_indexer, output_indexer, arg
         print("Begin Evaluation for epoch: ", i)
         denotation_acc = evaluate(dev_data, decoder)
         f.write(str(denotation_acc)[0:6] + '\n')
-        if args.copy == 'Y' and denotation_acc >=0.65:
-            torch.save(model_input_emb.state_dict(), 'copy_input_emb_'+ str(denotation_acc)[0:6]+args.results_path+'.pth.tar')
-            torch.save(model_output_emb.state_dict(), 'copy_output_emb_'+ str(denotation_acc)[0:6]+args.results_path+'.pth.tar')
-            torch.save(model_enc.state_dict(), 'copy_enc_'+ str(denotation_acc)[0:6]+args.results_path+'.pth.tar')
-            torch.save(model_dec.state_dict(), 'copy_dec_'+ str(denotation_acc)[0:6]+args.results_path+'.pth.tar')
+        if args.copy == 'Y' and denotation_acc >=0.74:
+            print("RETURNING DECODER WITH ACCURACY: ", denotation_acc)
+            torch.save(model_input_emb.state_dict(), args.results_path+'_'+'copy_input_emb_'+ str(denotation_acc)[0:6]+ '.pth.tar')
+            torch.save(model_output_emb.state_dict(), args.results_path+'_'+'copy_output_emb_'+ str(denotation_acc)[0:6]+'.pth.tar')
+            torch.save(model_enc.state_dict(), args.results_path+'_'+'copy_enc_'+ str(denotation_acc)[0:6]+'.pth.tar')
+            torch.save(model_dec.state_dict(), args.results_path+'_'+'copy_dec_'+ str(denotation_acc)[0:6]+'.pth.tar')
+            out_name = "geo_test_output_"+str(args.teacher_forcing_ratio)[0:6]+'_'+str(denotation_acc)[0:6]+".tsv"
+            evaluate(test_data, decoder, outfile=out_name)
+        elif args.attn == 'Y' and args.copy == 'N' and denotation_acc >= 0.61:
+            torch.save(model_input_emb.state_dict(), args.results_path+'_'+'attn_input_emb_'+ str(denotation_acc)[0:6]+'.pth.tar')
+            torch.save(model_output_emb.state_dict(), args.results_path+'_'+'attn_output_emb_'+ str(denotation_acc)[0:6]+'.pth.tar')
+            torch.save(model_enc.state_dict(), args.results_path+'_'+'attn_enc_'+ str(denotation_acc)[0:6]+'.pth.tar')
+            torch.save(model_dec.state_dict(), args.results_path+'_'+'attn_dec_'+ str(denotation_acc)[0:6]+'.pth.tar')
+        elif args.attn == 'N' and args.copy == 'N' and denotation_acc >= 0.15:
+            torch.save(model_input_emb.state_dict(), args.results_path+'_'+'base_input_emb_'+ str(denotation_acc)[0:6]+'.pth.tar')
+            torch.save(model_output_emb.state_dict(), args.results_path+'_'+'base_output_emb_'+ str(denotation_acc)[0:6]+'.pth.tar')
+            torch.save(model_enc.state_dict(), args.results_path+'_'+'base_enc_'+ str(denotation_acc)[0:6]+'.pth.tar')
+            torch.save(model_dec.state_dict(), args.results_path+'_'+'base_dec_'+ str(denotation_acc)[0:6]+'.pth.tar')
+
 
     return decoder
-
-
-
-            #if args.attn == 'N':
-            #    print('Model with no attention')
-            #    inc_loss = train_model_encdec(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, beam_length, args.teacher_forcing_ratio)
-            #elif args.attn == 'Y':
-            #    print('Model with attention')
-            #    inc_loss = train_attn(ex, model_input_emb, model_enc, model_output_emb, model_dec, enc_optimizer, dec_optimizer, beam_length, args.teacher_forcing_ratio)
-
 
 # Evaluates decoder against the data in test_data (could be dev data or test data). Prints some output
 # every example_freq examples. Writes predictions to outfile if defined. Evaluation requires
